@@ -149,12 +149,15 @@ function OrganizerDashboard({ token }) {
   const [loading, setLoading] = useState(false);
 
   const [form, setForm] = useState({
-    name: "",
-    eventDate: "",
-    venue: "",
-    description: "",
-    maxSeats: 0,
-  });
+  name: "",
+  eventDate: "",
+  startTime: "",
+  endTime: "",
+  venue: "",
+  description: "",
+  maxSeats: 0,
+});
+
 
   const headers = { Authorization: `Bearer ${token}` };
 
@@ -170,7 +173,16 @@ function OrganizerDashboard({ token }) {
   const createEvent = async (e) => {
     e.preventDefault();
     await axios.post(`${API}/api/events`, form, { headers });
-    setForm({ name: "", eventDate: "", venue: "", description: "", maxSeats: 0 });
+    setForm({
+  name: "",
+  eventDate: "",
+  startTime: "",
+  endTime: "",
+  venue: "",
+  description: "",
+  maxSeats: 0,
+});
+
     loadEvents();
   };
 
@@ -199,10 +211,26 @@ function OrganizerDashboard({ token }) {
         <form onSubmit={createEvent}>
           <input placeholder="Event Name" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
           <input
-          type="datetime-local"
+          type="date"
           value={form.eventDate}
           onChange={e => setForm({ ...form, eventDate: e.target.value })}
           />
+          <input
+  type="time"
+  title="Start Time"
+  aria-label="Start Time"
+  value={form.startTime}
+  onChange={e => setForm({ ...form, startTime: e.target.value })}
+/>
+
+<input
+  type="time"
+  title="End Time"
+  aria-label="End Time"
+  value={form.endTime}
+  onChange={e => setForm({ ...form, endTime: e.target.value })}
+/>
+
           <input placeholder="Venue" value={form.venue} onChange={e => setForm({ ...form, venue: e.target.value })} />
           <input type="number" placeholder="Max Seats" value={form.maxSeats} onChange={e => setForm({ ...form, maxSeats: e.target.value })} />
           <textarea placeholder="Description" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} />
@@ -217,7 +245,8 @@ function OrganizerDashboard({ token }) {
             <li className="event-item" key={e.id}>
               <span>
   <b>{e.name}</b><br />
-  {e.venue} • {formatDateTime(e.event_date)}
+{e.venue} • {formatDateTime(e.event_date)} <br />
+{e.start_time} – {e.end_time}
 </span>
 
               <div className="event-actions">
@@ -308,10 +337,12 @@ function StudentDashboard() {
           <li className="event-item" key={e.id}>
            <span>
   <b>{e.name}</b><br/>
-  {new Date(e.event_date).toLocaleString("en-IN", {
-    dateStyle: "medium",
-    timeStyle: "short"
-  })}
+  {new Date(e.event_date).toLocaleDateString("en-IN", {
+  dateStyle: "medium"
+})}
+<br />
+{e.start_time} – {e.end_time}
+
 </span>
 
 
