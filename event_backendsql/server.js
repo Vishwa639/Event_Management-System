@@ -4,14 +4,39 @@ const mysql = require("mysql2");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const QRCode = require("qrcode");
-const PDFDocument = require("pdfkit");
 const { v4: uuidv4 } = require("uuid");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
+require("dotenv").config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const JWT_SECRET = "event_system_secret";
+/* ================= FILE UPLOAD CONFIG ================= */
+const uploadDir = "./uploads";
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+app.use("/uploads", express.static("uploads"));
+
+const storage = multer.diskStorage({
+  destination: (_, __, cb) => cb(null, "uploads/"),
+  filename: (_, file, cb) =>
+    cb(null, Date.now() + path.extname(file.originalname)),
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 2 * 1024 * 1024 },
+  fileFilter: (_, file, cb) => {
+    if (!file.mimetype.startsWith("image/"))
+      return cb(new Error("Only images allowed"));
+    cb(null, true);
+  },
+});
+
+/* ================= CONFIG ================= */
+const JWT_SECRET = process.env.JWT_SECRET;
 
 /* ================= AUTH MIDDLEWARE ================= */
 function auth(req, res, next) {
@@ -26,18 +51,12 @@ function auth(req, res, next) {
   }
 }
 
-function adminOnly(req, res, next) {
-  if (req.user.role !== "admin")
-    return res.status(403).json({ message: "Admin only" });
-  next();
-}
-
 /* ================= DB ================= */
 const db = mysql.createConnection({
-  host: "localhost",
-  user: "root",
-  password: "iAm@mysqlroot111",
-  database: "event_system",
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASS,
+  database: process.env.DB_NAME,
 });
 
 db.connect(err => {
@@ -87,7 +106,7 @@ app.get("/api/events", (_, res) => {
   );
 });
 
-app.post("/api/events", auth, (req, res) => {
+app.post("/api/events", auth, upload.single("thumbnail"), (req, res) => {
   if (req.user.role !== "organizer")
     return res.status(403).json({ message: "Forbidden" });
 
@@ -98,13 +117,15 @@ app.post("/api/events", auth, (req, res) => {
     endTime,
     venue,
     description,
-    maxSeats
+    maxSeats,
   } = req.body;
+
+  const thumbnailPath = req.file ? `/uploads/${req.file.filename}` : null;
 
   db.query(
     `INSERT INTO events
-     (name, event_date, start_time, end_time, venue, description, max_seats, organizer_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+     (name,event_date,start_time,end_time,venue,description,max_seats,organizer_id,thumbnail)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
     [
       name,
       eventDate,
@@ -113,43 +134,17 @@ app.post("/api/events", auth, (req, res) => {
       venue,
       description,
       maxSeats || 0,
-      req.user.id
+      req.user.id,
+      thumbnailPath,
     ],
-    (err, result) => {
-      if (err) return res.status(500).json({ message: "Create failed" });
-      res.json({ id: result.insertId });
-    }
-  );
-});
-
-/* ================= DELETE EVENT ================= */
-app.delete("/api/events/:id", auth, (req, res) => {
-  if (req.user.role !== "organizer")
-    return res.status(403).json({ message: "Forbidden" });
-
-  const eventId = req.params.id;
-
-  db.query(
-    "DELETE FROM event_registrations WHERE event_id=?",
-    [eventId],
     err => {
-      if (err) return res.status(500).json({ message: "Delete failed" });
-
-      db.query(
-        "DELETE FROM events WHERE id=? AND organizer_id=?",
-        [eventId, req.user.id],
-        (_, result) => {
-          if (!result.affectedRows)
-            return res.status(404).json({ message: "Event not found" });
-
-          res.json({ message: "Event deleted" });
-        }
-      );
+      if (err) return res.status(500).json({ message: "Create failed" });
+      res.json({ message: "Event created" });
     }
   );
 });
 
-/* ================= ORGANIZER ================= */
+/* ================= ORGANIZER EVENTS ================= */
 app.get("/api/organizer/events", auth, (req, res) => {
   if (req.user.role !== "organizer")
     return res.status(403).json({ message: "Forbidden" });
@@ -161,6 +156,7 @@ app.get("/api/organizer/events", auth, (req, res) => {
   );
 });
 
+/* ================= ORGANIZER EVENT REGISTRATIONS ================= */
 app.get("/api/organizer/events/:id/registrations", auth, (req, res) => {
   if (req.user.role !== "organizer")
     return res.status(403).json({ message: "Forbidden" });
@@ -183,30 +179,62 @@ app.get("/api/organizer/events/:id/registrations", auth, (req, res) => {
 });
 
 
-/* ================= REGISTRATION ================= */
+/* ================= STUDENT REGISTRATIONS (MISSING FIX) ================= */
+app.get("/api/student/registrations", auth, (req, res) => {
+  db.query(
+    `
+    SELECT r.reg_code, r.verified,
+           e.name AS event_name, e.venue
+    FROM event_registrations r
+    JOIN events e ON r.event_id = e.id
+    WHERE r.user_id = ?
+    `,
+    [req.user.id],
+    (_, rows) => res.json(rows)
+  );
+});
+
+/* ================= REGISTRATION (SEAT LIMIT) ================= */
 app.post("/api/events/:id/register", auth, (req, res) => {
   const { studentName, registerNo, department } = req.body;
   const eventId = req.params.id;
 
   db.query(
-    "SELECT id FROM event_registrations WHERE event_id=? AND user_id=?",
-    [eventId, req.user.id],
-    (_, dup) => {
-      if (dup.length)
-        return res.status(400).json({ message: "Already registered" });
+    `SELECT 
+        (SELECT COUNT(*) FROM event_registrations WHERE event_id=?) AS usedSeats,
+        max_seats
+     FROM events WHERE id=?`,
+    [eventId, eventId],
+    (_, rows) => {
+      if (!rows.length)
+        return res.status(404).json({ message: "Event not found" });
 
-      const regCode = uuidv4();
+      const { usedSeats, max_seats } = rows[0];
+      if (max_seats > 0 && usedSeats >= max_seats)
+        return res.status(403).json({ message: "Event full" });
 
       db.query(
-        `INSERT INTO event_registrations
-         (event_id,user_id,student_name,register_no,department,reg_code)
-         VALUES (?,?,?,?,?,?)`,
-        [eventId, req.user.id, studentName, registerNo, department, regCode],
-        async () => {
-          const qrDataUrl = await QRCode.toDataURL(
-            `http://10.48.113.196:5001/api/verify/${regCode}`
+        "SELECT id FROM event_registrations WHERE event_id=? AND user_id=?",
+        [eventId, req.user.id],
+        (_, dup) => {
+          if (dup.length)
+            return res.status(400).json({ message: "Already registered" });
+
+          const regCode = uuidv4();
+
+          db.query(
+            `INSERT INTO event_registrations
+             (event_id,user_id,student_name,register_no,department,reg_code)
+             VALUES (?,?,?,?,?,?)`,
+            [eventId, req.user.id, studentName, registerNo, department, regCode],
+            async () => {
+              const qr = await QRCode.toDataURL(
+                `${process.env.BASE_URL}/api/verify/${regCode}`
+              );
+
+              res.json({ qrDataUrl: qr });
+            }
           );
-          res.json({ qrDataUrl });
         }
       );
     }
@@ -216,109 +244,24 @@ app.post("/api/events/:id/register", auth, (req, res) => {
 /* ================= QR VERIFY ================= */
 app.get("/api/verify/:code", (req, res) => {
   db.query(
-    `
-    SELECT r.student_name, r.register_no, r.department,
-           e.name AS event_name, e.venue, e.start_time, e.end_time
-    FROM event_registrations r
-    JOIN events e ON r.event_id=e.id
-    WHERE r.reg_code=?
-    LIMIT 1
-    `,
+    `SELECT r.*, e.name AS event_name
+     FROM event_registrations r
+     JOIN events e ON r.event_id=e.id
+     WHERE r.reg_code=?`,
     [req.params.code],
-    (err, rows) => {
-      if (err || !rows.length)
-        return res.status(404).send("Invalid QR");
+    (_, rows) => {
+      if (!rows.length) return res.status(404).send("Invalid QR");
 
       const r = rows[0];
+      if (r.verified) return res.send("<h2>Already Verified ✅</h2>");
 
       db.query(
         "UPDATE event_registrations SET verified=1, verified_at=NOW() WHERE reg_code=?",
         [req.params.code]
       );
 
-      res.send(`
-        <h2>Attendance Verified ✅</h2>
-        <p><b>Name:</b> ${r.student_name}</p>
-        <p><b>Register No:</b> ${r.register_no}</p>
-        <p><b>Department:</b> ${r.department}</p>
-        <p><b>Verified At:</b> ${new Date().toLocaleString("en-IN")}</p>
-        <hr/>
-        <p><b>Event:</b> ${r.event_name}</p>
-        <p><b>Venue:</b> ${r.venue}</p>
-        <p><b>Time:</b> ${r.start_time} – ${r.end_time}</p>
-      `);
+      res.send(`<h2>Attendance Verified ✅</h2><p>${r.student_name}</p>`);
     }
-  );
-});
-
-/* ================= CERTIFICATE ================= */
-app.get("/api/certificate/:regCode", (req, res) => {
-  db.query(
-    `
-    SELECT r.*, e.name AS event_name, e.event_date
-    FROM event_registrations r
-    JOIN events e ON r.event_id=e.id
-    WHERE r.reg_code=?
-    `,
-    [req.params.regCode],
-    (err, rows) => {
-      if (err || !rows.length)
-        return res.status(404).send("Invalid record");
-
-      const r = rows[0];
-      if (!r.verified)
-        return res.status(403).send("Attendance not verified");
-
-      if (r.certificate_issued_at)
-        return res.status(403).send("Certificate already issued");
-
-      db.query(
-        "UPDATE event_registrations SET certificate_issued_at=NOW() WHERE reg_code=?",
-        [req.params.regCode]
-      );
-
-      const doc = new PDFDocument();
-      res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", "inline; filename=certificate.pdf");
-      doc.pipe(res);
-
-      doc.fontSize(22).text("Certificate of Participation", { align: "center" });
-      doc.moveDown(2);
-      doc.text(r.student_name, { align: "center" });
-      doc.moveDown();
-      doc.text(`Event: ${r.event_name}`, { align: "center" });
-      doc.text(`Date: ${r.event_date}`, { align: "center" });
-      doc.end();
-    }
-  );
-});
-
-/* ================= STUDENT ================= */
-app.get("/api/student/registrations", auth, (req, res) => {
-  db.query(
-    `
-    SELECT r.reg_code, r.verified, e.name AS event_name, e.venue
-    FROM event_registrations r
-    JOIN events e ON r.event_id=e.id
-    WHERE r.user_id=?
-    `,
-    [req.user.id],
-    (_, rows) => res.json(rows)
-  );
-});
-
-/* ================= ADMIN ================= */
-app.get("/api/admin/events", auth, adminOnly, (_, res) => {
-  db.query(
-    `
-    SELECT e.name,
-           COUNT(r.id) AS registrations,
-           SUM(r.verified=1) AS attended
-    FROM events e
-    LEFT JOIN event_registrations r ON e.id=r.event_id
-    GROUP BY e.id
-    `,
-    (_, rows) => res.json(rows)
   );
 });
 

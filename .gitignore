@@ -1,0 +1,12 @@
+# Environment variables
+.env
+.env.local
+
+# Node
+node_modules/
+
+# Uploads
+event_backendsql/uploads/
+
+# Logs
+npm-debug.log*
