@@ -1,3 +1,4 @@
+console.log("🔥🔥 RUNNING THIS SERVER FILE 🔥🔥");
 const express = require("express");
 const cors = require("cors");
 const mysql = require("mysql2");
@@ -153,6 +154,37 @@ app.get("/api/organizer/events", auth, (req, res) => {
     "SELECT * FROM events WHERE organizer_id=? ORDER BY event_date DESC",
     [req.user.id],
     (_, rows) => res.json(rows)
+  );
+});
+
+/* ================= DELETE EVENT ================= */
+app.delete("/api/events/:id", auth, (req, res) => {
+  console.log("🔥 DELETE EVENT HANDLER HIT", req.params.id);
+
+  if (req.user.role !== "organizer")
+    return res.status(403).json({ message: "Forbidden" });
+
+  const eventId = req.params.id;
+
+  db.query(
+    "SELECT id FROM events WHERE id=? AND organizer_id=?",
+    [eventId, req.user.id],
+    (_, rows) => {
+      if (!rows.length)
+        return res.status(404).json({ message: "Event not found" });
+
+      db.query(
+        "DELETE FROM event_registrations WHERE event_id=?",
+        [eventId],
+        () => {
+          db.query(
+            "DELETE FROM events WHERE id=?",
+            [eventId],
+            () => res.json({ message: "Event deleted" })
+          );
+        }
+      );
+    }
   );
 });
 
