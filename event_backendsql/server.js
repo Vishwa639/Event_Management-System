@@ -240,7 +240,7 @@ app.get("/api/student/registrations", auth, (req, res) => {
 
 /* ─────────────── RAZORPAY INTEGRATION ─────────────── */
 
-/* 1. Create Razorpay Order - now reads fee from DB */
+/* 1. Create Razorpay Order */
 app.post("/api/events/:id/create-payment-order", auth, (req, res) => {
   if (req.user.role !== "student") return res.status(403).json({ message: "Only students can pay" });
 
@@ -285,7 +285,7 @@ app.post("/api/events/:id/create-payment-order", auth, (req, res) => {
               orderId: order.id,
               amount: order.amount,
               currency: order.currency,
-              eventFee: fee, // for frontend display/validation
+              eventFee: fee,
             });
           });
         }
@@ -296,82 +296,102 @@ app.post("/api/events/:id/create-payment-order", auth, (req, res) => {
 
 /* 2. Verify payment + complete registration */
 app.post("/api/events/:id/verify-payment-and-register", auth, async (req, res) => {
-  const {
-    razorpay_payment_id,
-    razorpay_order_id,
-    razorpay_signature,
-    studentName,
-    registerNo,
-    department,
-    amount, // in paise
-  } = req.body;
+  try {
+    const {
+      razorpay_payment_id,
+      razorpay_order_id,
+      razorpay_signature,
+      studentName,
+      registerNo,
+      department,
+      amount,
+    } = req.body;
 
-  const eventId = req.params.id;
+    const eventId = req.params.id;
 
-  // Verify signature
-  const generatedSignature = crypto
-    .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
-    .update(`${razorpay_order_id}|${razorpay_payment_id}`)
-    .digest("hex");
+    // Allow bypass for Free Events
+const isFree = razorpay_signature === "FREE_BYPASS";
 
-  if (generatedSignature !== razorpay_signature) {
-    return res.status(400).json({ message: "Invalid payment signature" });
-  }
+if (!isFree) {
+    const generatedSignature = crypto
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest("hex");
 
-  // Get event to verify fee matches (extra security)
-  db.query(
-    "SELECT registration_fee FROM events WHERE id = ?",
-    [eventId],
-    (_, eventRows) => {
-      if (!eventRows.length) return res.status(404).json({ message: "Event not found" });
-
-      const expectedFeePaise = Math.round((eventRows[0].registration_fee || 0) * 100);
-
-      if (expectedFeePaise !== amount) {
-        return res.status(400).json({ message: "Payment amount mismatch" });
-      }
-
-      db.query(
-        `SELECT 
-            (SELECT COUNT(*) FROM event_registrations WHERE event_id=?) AS usedSeats,
-            max_seats
-         FROM events WHERE id=?`,
-        [eventId, eventId],
-        (_, rows) => {
-          if (!rows.length) return res.status(404).json({ message: "Event not found" });
-
-          const { usedSeats, max_seats } = rows[0];
-          if (max_seats > 0 && usedSeats >= max_seats) {
-            return res.status(403).json({ message: "Event full" });
-          }
-
-          const regCode = uuidv4();
-
-          db.query(
-            `INSERT INTO event_registrations
-             (event_id, user_id, student_name, register_no, department, reg_code, payment_id)
-             VALUES (?,?,?,?,?,?,?)`,
-            [eventId, req.user.id, studentName, registerNo, department, regCode, razorpay_payment_id],
-            async (err) => {
-              if (err) {
-                console.error("Registration insert error:", err);
-                return res.status(500).json({ message: "Failed to complete registration" });
-              }
-
-              try {
-                const qr = await QRCode.toDataURL(
-                  `${process.env.BASE_URL}/api/verify/${regCode}`
-                );
-                res.json({ qrDataUrl: qr });
-              } catch (e) {
-                res.status(500).json({ message: "QR generation failed" });
-              }
-            }
-          );
-        }
-      );
+    if (generatedSignature !== razorpay_signature) {
+      return res.status(400).json({ message: "Invalid payment signature" });
     }
-  );
+}
+
+    // Verify signature
+    const generatedSignature = crypto
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest("hex");
+
+    if (generatedSignature !== razorpay_signature) {
+      console.log("Invalid signature for order", razorpay_order_id);
+      return res.status(400).json({ message: "Invalid payment signature" });
+    }
+
+    // Get event to verify fee matches
+    db.query(
+      "SELECT registration_fee FROM events WHERE id = ?",
+      [eventId],
+      (_, eventRows) => {
+        if (!eventRows.length) return res.status(404).json({ message: "Event not found" });
+
+        const expectedFeePaise = Math.round((eventRows[0].registration_fee || 0) * 100);
+
+        if (expectedFeePaise !== amount) {
+          return res.status(400).json({ message: "Payment amount mismatch" });
+        }
+
+        db.query(
+          `SELECT 
+              (SELECT COUNT(*) FROM event_registrations WHERE event_id=?) AS usedSeats,
+              max_seats
+           FROM events WHERE id=?`,
+          [eventId, eventId],
+          (_, rows) => {
+            if (!rows.length) return res.status(404).json({ message: "Event not found" });
+
+            const { usedSeats, max_seats } = rows[0];
+            if (max_seats > 0 && usedSeats >= max_seats) {
+              return res.status(403).json({ message: "Event full" });
+            }
+
+            const regCode = uuidv4();
+
+            db.query(
+              `INSERT INTO event_registrations
+               (event_id, user_id, student_name, register_no, department, reg_code, payment_id)
+               VALUES (?,?,?,?,?,?,?)`,
+              [eventId, req.user.id, studentName, registerNo, department, regCode, razorpay_payment_id],
+              async (err) => {
+                if (err) {
+                  console.error("Registration insert error:", err);
+                  return res.status(500).json({ message: "Failed to complete registration" });
+                }
+
+                try {
+                  const qr = await QRCode.toDataURL(
+                    `${process.env.BASE_URL}/api/verify/${regCode}`
+                  );
+                  res.json({ qrDataUrl: qr });
+                } catch (e) {
+                  res.status(500).json({ message: "QR generation failed" });
+                }
+              }
+            );
+          }
+        );
+      }
+    );
+  } catch (err) {
+    console.error("Payment verification error:", err);
+    res.status(500).json({ message: "Payment verification failed - please try again" });
+  }
 });
 
 /* ================= QR VERIFY ================= */
