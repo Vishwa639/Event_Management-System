@@ -9,11 +9,19 @@ const { v4: uuidv4 } = require("uuid");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const crypto = require("crypto");
+const Razorpay = require("razorpay");
 require("dotenv").config();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+/* ================= RAZORPAY INIT ================= */
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
+});
 
 /* ================= FILE UPLOAD CONFIG ================= */
 const uploadDir = "./uploads";
@@ -102,14 +110,14 @@ app.post("/api/auth/login", (req, res) => {
 
 /* ================= EVENTS ================= */
 app.get("/api/events", (_, res) => {
-  db.query("SELECT * FROM events ORDER BY event_date", (_, rows) =>
-    res.json(rows)
+  db.query(
+    "SELECT id, name, event_date, start_time, end_time, venue, description, max_seats, thumbnail, registration_fee FROM events ORDER BY event_date",
+    (_, rows) => res.json(rows)
   );
 });
 
 app.post("/api/events", auth, upload.single("thumbnail"), (req, res) => {
-  if (req.user.role !== "organizer")
-    return res.status(403).json({ message: "Forbidden" });
+  if (req.user.role !== "organizer") return res.status(403).json({ message: "Forbidden" });
 
   const {
     name,
@@ -119,39 +127,55 @@ app.post("/api/events", auth, upload.single("thumbnail"), (req, res) => {
     venue,
     description,
     maxSeats,
+    registrationFee = 0,
   } = req.body;
 
   const thumbnailPath = req.file ? `/uploads/${req.file.filename}` : null;
+  const fee = parseFloat(registrationFee) || 0;
+
+  console.log("=== NEW EVENT DEBUG ===");
+  console.log("Received body:", req.body);
+  console.log("Parsed fee:", fee);
+  console.log("File:", req.file ? req.file.originalname : "No thumbnail");
 
   db.query(
     `INSERT INTO events
-     (name,event_date,start_time,end_time,venue,description,max_seats,organizer_id,thumbnail)
-     VALUES (?,?,?,?,?,?,?,?,?)`,
+     (name, event_date, start_time, end_time, venue, description, max_seats, organizer_id, thumbnail, registration_fee)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`,
     [
-      name,
-      eventDate,
-      startTime,
-      endTime,
-      venue,
-      description,
+      name || "Untitled Event",
+      eventDate || null,
+      startTime || null,
+      endTime || null,
+      venue || null,
+      description || null,
       maxSeats || 0,
       req.user.id,
       thumbnailPath,
+      fee,
     ],
-    err => {
-      if (err) return res.status(500).json({ message: "Create failed" });
-      res.json({ message: "Event created" });
+    (err, result) => {
+      if (err) {
+        console.error("EVENT INSERT ERROR:", err);
+        console.error("SQL Message:", err.sqlMessage || err.message);
+        return res.status(500).json({ 
+          message: "Failed to create event",
+          error: err.sqlMessage || "Database error" 
+        });
+      }
+
+      console.log("Event created successfully, ID:", result.insertId);
+      res.json({ message: "Event created", eventId: result.insertId });
     }
   );
 });
 
 /* ================= ORGANIZER EVENTS ================= */
 app.get("/api/organizer/events", auth, (req, res) => {
-  if (req.user.role !== "organizer")
-    return res.status(403).json({ message: "Forbidden" });
+  if (req.user.role !== "organizer") return res.status(403).json({ message: "Forbidden" });
 
   db.query(
-    "SELECT * FROM events WHERE organizer_id=? ORDER BY event_date DESC",
+    "SELECT id, name, event_date, start_time, end_time, venue, description, max_seats, thumbnail, registration_fee FROM events WHERE organizer_id=? ORDER BY event_date DESC",
     [req.user.id],
     (_, rows) => res.json(rows)
   );
@@ -161,8 +185,7 @@ app.get("/api/organizer/events", auth, (req, res) => {
 app.delete("/api/events/:id", auth, (req, res) => {
   console.log("🔥 DELETE EVENT HANDLER HIT", req.params.id);
 
-  if (req.user.role !== "organizer")
-    return res.status(403).json({ message: "Forbidden" });
+  if (req.user.role !== "organizer") return res.status(403).json({ message: "Forbidden" });
 
   const eventId = req.params.id;
 
@@ -170,28 +193,18 @@ app.delete("/api/events/:id", auth, (req, res) => {
     "SELECT id FROM events WHERE id=? AND organizer_id=?",
     [eventId, req.user.id],
     (_, rows) => {
-      if (!rows.length)
-        return res.status(404).json({ message: "Event not found" });
+      if (!rows.length) return res.status(404).json({ message: "Event not found" });
 
-      db.query(
-        "DELETE FROM event_registrations WHERE event_id=?",
-        [eventId],
-        () => {
-          db.query(
-            "DELETE FROM events WHERE id=?",
-            [eventId],
-            () => res.json({ message: "Event deleted" })
-          );
-        }
-      );
+      db.query("DELETE FROM event_registrations WHERE event_id=?", [eventId], () => {
+        db.query("DELETE FROM events WHERE id=?", [eventId], () => res.json({ message: "Event deleted" }));
+      });
     }
   );
 });
 
 /* ================= ORGANIZER EVENT REGISTRATIONS ================= */
 app.get("/api/organizer/events/:id/registrations", auth, (req, res) => {
-  if (req.user.role !== "organizer")
-    return res.status(403).json({ message: "Forbidden" });
+  if (req.user.role !== "organizer") return res.status(403).json({ message: "Forbidden" });
 
   const sql = `
     SELECT 
@@ -210,13 +223,12 @@ app.get("/api/organizer/events/:id/registrations", auth, (req, res) => {
   });
 });
 
-
-/* ================= STUDENT REGISTRATIONS (MISSING FIX) ================= */
+/* ================= STUDENT REGISTRATIONS ================= */
 app.get("/api/student/registrations", auth, (req, res) => {
   db.query(
     `
     SELECT r.reg_code, r.verified,
-           e.name AS event_name, e.venue
+           e.name AS event_name, e.venue, e.registration_fee
     FROM event_registrations r
     JOIN events e ON r.event_id = e.id
     WHERE r.user_id = ?
@@ -226,45 +238,134 @@ app.get("/api/student/registrations", auth, (req, res) => {
   );
 });
 
-/* ================= REGISTRATION (SEAT LIMIT) ================= */
-app.post("/api/events/:id/register", auth, (req, res) => {
-  const { studentName, registerNo, department } = req.body;
+/* ─────────────── RAZORPAY INTEGRATION ─────────────── */
+
+/* 1. Create Razorpay Order - now reads fee from DB */
+app.post("/api/events/:id/create-payment-order", auth, (req, res) => {
+  if (req.user.role !== "student") return res.status(403).json({ message: "Only students can pay" });
+
   const eventId = req.params.id;
 
   db.query(
-    `SELECT 
-        (SELECT COUNT(*) FROM event_registrations WHERE event_id=?) AS usedSeats,
-        max_seats
-     FROM events WHERE id=?`,
-    [eventId, eventId],
-    (_, rows) => {
-      if (!rows.length)
+    "SELECT registration_fee FROM events WHERE id = ?",
+    [eventId],
+    (err, eventRows) => {
+      if (err || !eventRows.length) {
         return res.status(404).json({ message: "Event not found" });
+      }
 
-      const { usedSeats, max_seats } = rows[0];
-      if (max_seats > 0 && usedSeats >= max_seats)
-        return res.status(403).json({ message: "Event full" });
+      const fee = parseFloat(eventRows[0].registration_fee) || 0;
+
+      if (fee <= 0) {
+        return res.status(400).json({ 
+          message: "This is a free event - no payment required" 
+        });
+      }
 
       db.query(
         "SELECT id FROM event_registrations WHERE event_id=? AND user_id=?",
         [eventId, req.user.id],
-        (_, dup) => {
-          if (dup.length)
-            return res.status(400).json({ message: "Already registered" });
+        (_, existing) => {
+          if (existing.length) return res.status(400).json({ message: "Already registered" });
+
+          const options = {
+            amount: Math.round(fee * 100), // paise
+            currency: "INR",
+            receipt: `rec_${eventId}_${req.user.id}_${Date.now()}`,
+            notes: { event_id: eventId, user_id: req.user.id },
+          };
+
+          razorpay.orders.create(options, (err, order) => {
+            if (err) {
+              console.error("Razorpay order creation failed:", err);
+              return res.status(500).json({ message: "Cannot create payment order" });
+            }
+
+            res.json({
+              orderId: order.id,
+              amount: order.amount,
+              currency: order.currency,
+              eventFee: fee, // for frontend display/validation
+            });
+          });
+        }
+      );
+    }
+  );
+});
+
+/* 2. Verify payment + complete registration */
+app.post("/api/events/:id/verify-payment-and-register", auth, async (req, res) => {
+  const {
+    razorpay_payment_id,
+    razorpay_order_id,
+    razorpay_signature,
+    studentName,
+    registerNo,
+    department,
+    amount, // in paise
+  } = req.body;
+
+  const eventId = req.params.id;
+
+  // Verify signature
+  const generatedSignature = crypto
+    .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+    .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+    .digest("hex");
+
+  if (generatedSignature !== razorpay_signature) {
+    return res.status(400).json({ message: "Invalid payment signature" });
+  }
+
+  // Get event to verify fee matches (extra security)
+  db.query(
+    "SELECT registration_fee FROM events WHERE id = ?",
+    [eventId],
+    (_, eventRows) => {
+      if (!eventRows.length) return res.status(404).json({ message: "Event not found" });
+
+      const expectedFeePaise = Math.round((eventRows[0].registration_fee || 0) * 100);
+
+      if (expectedFeePaise !== amount) {
+        return res.status(400).json({ message: "Payment amount mismatch" });
+      }
+
+      db.query(
+        `SELECT 
+            (SELECT COUNT(*) FROM event_registrations WHERE event_id=?) AS usedSeats,
+            max_seats
+         FROM events WHERE id=?`,
+        [eventId, eventId],
+        (_, rows) => {
+          if (!rows.length) return res.status(404).json({ message: "Event not found" });
+
+          const { usedSeats, max_seats } = rows[0];
+          if (max_seats > 0 && usedSeats >= max_seats) {
+            return res.status(403).json({ message: "Event full" });
+          }
 
           const regCode = uuidv4();
 
           db.query(
             `INSERT INTO event_registrations
-             (event_id,user_id,student_name,register_no,department,reg_code)
-             VALUES (?,?,?,?,?,?)`,
-            [eventId, req.user.id, studentName, registerNo, department, regCode],
-            async () => {
-              const qr = await QRCode.toDataURL(
-                `${process.env.BASE_URL}/api/verify/${regCode}`
-              );
+             (event_id, user_id, student_name, register_no, department, reg_code, payment_id)
+             VALUES (?,?,?,?,?,?,?)`,
+            [eventId, req.user.id, studentName, registerNo, department, regCode, razorpay_payment_id],
+            async (err) => {
+              if (err) {
+                console.error("Registration insert error:", err);
+                return res.status(500).json({ message: "Failed to complete registration" });
+              }
 
-              res.json({ qrDataUrl: qr });
+              try {
+                const qr = await QRCode.toDataURL(
+                  `${process.env.BASE_URL}/api/verify/${regCode}`
+                );
+                res.json({ qrDataUrl: qr });
+              } catch (e) {
+                res.status(500).json({ message: "QR generation failed" });
+              }
             }
           );
         }

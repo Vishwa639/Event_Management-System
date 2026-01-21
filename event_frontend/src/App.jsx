@@ -138,14 +138,12 @@ function Register({ setView }) {
       alert("Registration Successful");
       setView("login");
     } catch (err) {
-  if (err.response?.data?.message) {
-    setError(err.response.data.message);
-  } else {
-    setError("Registration failed");
-  }
-}
-
-    finally { setLoading(false); }
+      if (err.response?.data?.message) {
+        setError(err.response.data.message);
+      } else {
+        setError("Registration failed");
+      }
+    } finally { setLoading(false); }
   };
 
   return (
@@ -175,19 +173,40 @@ function EventSystem({ role, token }) {
   return <div>Role Error</div>;
 }
 
-/* ── ORGANIZER DASHBOARD (Updated for Thumbnails) ── */
+/* ── ORGANIZER DASHBOARD ── */
+/* ── ORGANIZER DASHBOARD ── */
 function OrganizerDashboard({ token }) {
   const [events, setEvents] = useState([]);
   const [regs, setRegs] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [selectedFile, setSelectedFile] = useState(null); // New state for file
-  const [form, setForm] = useState({ name: "", eventDate: "", startTime: "", endTime: "", venue: "", description: "", maxSeats: 0 });
+  const [selectedFile, setSelectedFile] = useState(null);
+  
+  // Form state — added only isPaid and registrationFee
+  const [form, setForm] = useState({
+    name: "",
+    eventDate: "",
+    startTime: "",
+    endTime: "",
+    venue: "",
+    description: "",
+    maxSeats: 0,
+    isPaid: false,           // ← new
+    registrationFee: 0       // ← new
+  });
+
   const headers = { Authorization: `Bearer ${token}` };
 
   const loadEvents = () => {
     setLoading(true);
     axios.get(`${API}/api/organizer/events`, { headers })
-      .then(res => setEvents(res.data))
+      .then(res => {
+        const data = Array.isArray(res.data) ? res.data : [];
+        setEvents(data);
+      })
+      .catch(err => {
+        console.error("Load events error:", err);
+        setEvents([]);
+      })
       .finally(() => setLoading(false));
   };
 
@@ -196,7 +215,6 @@ function OrganizerDashboard({ token }) {
   const createEvent = async (e) => {
     e.preventDefault();
     
-    // Industrial Standard: Using FormData for Multipart (File + Text)
     const formData = new FormData();
     formData.append("name", form.name);
     formData.append("eventDate", form.eventDate);
@@ -206,6 +224,9 @@ function OrganizerDashboard({ token }) {
     formData.append("description", form.description);
     formData.append("maxSeats", form.maxSeats);
     
+    // Send fee: 0 if not paid, or the value if paid
+    formData.append("registrationFee", form.isPaid ? form.registrationFee : 0);
+    
     if (selectedFile) {
       formData.append("thumbnail", selectedFile);
     }
@@ -214,8 +235,14 @@ function OrganizerDashboard({ token }) {
       await axios.post(`${API}/api/events`, formData, { 
         headers: { ...headers, "Content-Type": "multipart/form-data" } 
       });
-      setForm({ name: "", eventDate: "", startTime: "", endTime: "", venue: "", description: "", maxSeats: 0 });
-      setSelectedFile(null); // Clear file input
+      
+      // Reset form (including new fields)
+      setForm({
+        name: "", eventDate: "", startTime: "", endTime: "", venue: "", description: "", maxSeats: 0,
+        isPaid: false,
+        registrationFee: 0
+      });
+      setSelectedFile(null);
       loadEvents();
     } catch (err) {
       alert("Deployment failed. Check console.");
@@ -246,20 +273,95 @@ function OrganizerDashboard({ token }) {
         <div className="glass-card">
           <h3>Deploy New Event</h3>
           <form onSubmit={createEvent} className="dynamic-form">
-            <input className="full" placeholder="Event Name" value={form.name} onChange={e => setForm({...form, name: e.target.value})} required />
-            <input type="date" value={form.eventDate} onChange={e => setForm({...form, eventDate: e.target.value})} required />
-            <input type="number" placeholder="Capacity" value={form.maxSeats} onChange={e => setForm({...form, maxSeats: e.target.value})} />
-            <input type="time" value={form.startTime} onChange={e => setForm({...form, startTime: e.target.value})} />
-            <input type="time" value={form.endTime} onChange={e => setForm({...form, endTime: e.target.value})} />
-            <input className="full" placeholder="Venue Location" value={form.venue} onChange={e => setForm({...form, venue: e.target.value})} />
+            <input 
+              className="full" 
+              placeholder="Event Name" 
+              value={form.name} 
+              onChange={e => setForm({...form, name: e.target.value})} 
+              required 
+            />
             
-            {/* New File Input */}
-            <div className="full" style={{marginTop: "10px"}}>
-              <label style={{fontSize: "0.8rem", color: "var(--text-dim)"}}>Event Thumbnail (Optional)</label>
-              <input type="file" accept="image/*" onChange={e => setSelectedFile(e.target.files[0])} />
+            <input 
+              type="date" 
+              value={form.eventDate} 
+              onChange={e => setForm({...form, eventDate: e.target.value})} 
+              required 
+            />
+            
+            <input 
+              type="number" 
+              placeholder="Capacity" 
+              value={form.maxSeats} 
+              onChange={e => setForm({...form, maxSeats: e.target.value})} 
+            />
+
+            {/* ── NEW: Paid checkbox + conditional fee field ── */}
+            <div style={{ margin: "12px 0", display: "flex", alignItems: "center", gap: "10px" }}>
+              <input
+                type="checkbox"
+                id="isPaid"
+                checked={form.isPaid}
+                onChange={e => setForm({ ...form, isPaid: e.target.checked })}
+                style={{ width: "18px", height: "18px", accentColor: "#6366f1" }}
+              />
+              <label 
+                htmlFor="isPaid" 
+                style={{ fontSize: "0.95rem", color: "#e2e8f0", cursor: "pointer" }}
+              >
+                This is a paid event
+              </label>
             </div>
 
-            <textarea className="full" placeholder="Internal Description" value={form.description} onChange={e => setForm({...form, description: e.target.value})} />
+            {form.isPaid && (
+              <input
+                type="number"
+                placeholder="Registration Fee (₹)"
+                value={form.registrationFee}
+                onChange={e => setForm({...form, registrationFee: parseFloat(e.target.value) || 0})}
+                min="1"
+                step="1"
+                required={form.isPaid}  // only required if checked
+                style={{ marginTop: "8px" }}
+              />
+            )}
+
+            <input 
+              type="time" 
+              value={form.startTime} 
+              onChange={e => setForm({...form, startTime: e.target.value})} 
+            />
+            
+            <input 
+              type="time" 
+              value={form.endTime} 
+              onChange={e => setForm({...form, endTime: e.target.value})} 
+            />
+            
+            <input 
+              className="full" 
+              placeholder="Venue Location" 
+              value={form.venue} 
+              onChange={e => setForm({...form, venue: e.target.value})} 
+            />
+            
+            <div className="full" style={{marginTop: "10px"}}>
+              <label style={{fontSize: "0.8rem", color: "var(--text-dim)"}}>
+                Event Thumbnail (Optional)
+              </label>
+              <input 
+                type="file" 
+                accept="image/*" 
+                onChange={e => setSelectedFile(e.target.files[0])} 
+              />
+            </div>
+
+            <textarea 
+              className="full" 
+              placeholder="Internal Description" 
+              value={form.description} 
+              onChange={e => setForm({...form, description: e.target.value})} 
+            />
+            
             <button className="primary-glow-btn full">Publish to System</button>
           </form>
         </div>
@@ -271,7 +373,10 @@ function OrganizerDashboard({ token }) {
               <div className="event-row-card" key={e.id}>
                 <div>
                   <h4 className="e-title">{e.name}</h4>
-                  <small>{e.venue} • {new Date(e.event_date).toLocaleDateString()}</small>
+                  <small>
+                    {e.venue} • {new Date(e.event_date).toLocaleDateString()}
+                    {e.registration_fee > 0 && ` • ₹${e.registration_fee}`}
+                  </small>
                 </div>
                 <div className="btn-group">
                   <button className="btn-mini-sec" onClick={() => viewRegs(e.id)}>Track</button>
@@ -307,65 +412,152 @@ function OrganizerDashboard({ token }) {
     </div>
   );
 }
-
-/* ── STUDENT DASHBOARD (Updated with Visual Cards) ── */
+/* ── STUDENT DASHBOARD ── */
 function StudentDashboard({ token }) {
   const [events, setEvents] = useState([]);
   const [registrations, setRegistrations] = useState([]);
   const [form, setForm] = useState({ studentName: "", registerNo: "", department: "" });
 
- useEffect(() => {
-  axios.get(`${API}/api/events`).then(res => {
-    setEvents(Array.isArray(res.data) ? res.data : []);
-  });
+  useEffect(() => {
+    axios.get(`${API}/api/events`).then(res => {
+      setEvents(Array.isArray(res.data) ? res.data : []);
+    });
 
-  axios.get(`${API}/api/student/registrations`, { 
-    headers: { Authorization: `Bearer ${token}` } 
-  }).then(res => {
-    setRegistrations(Array.isArray(res.data) ? res.data : []);
-  });
-}, [token]);
+    axios.get(`${API}/api/student/registrations`, { 
+      headers: { Authorization: `Bearer ${token}` } 
+    }).then(res => {
+      setRegistrations(Array.isArray(res.data) ? res.data : []);
+    });
+  }, [token]);
 
+  // Load Razorpay script dynamically
+  const loadRazorpayScript = () => {
+    return new Promise((resolve) => {
+      if (window.Razorpay) {
+        resolve(true);
+        return;
+      }
+      const script = document.createElement("script");
+      script.src = "https://checkout.razorpay.com/v1/checkout.js";
+      script.onload = () => resolve(true);
+      script.onerror = () => resolve(false);
+      document.body.appendChild(script);
+    });
+  };
 
-  const register = async (id) => {
+  const register = async (eventId) => {
+  if (!form.studentName || !form.registerNo || !form.department) {
+    alert("Please fill your name, register number and department first");
+    return;
+  }
+
+  const selectedEvent = events.find(e => e.id === eventId);
+  if (!selectedEvent) {
+    alert("Event not found");
+    return;
+  }
+
+  const fee = Number(selectedEvent.registration_fee) || 0;
+
+  if (fee <= 0) {
+    alert("This is a free event.\n\nDirect registration not implemented yet.");
+    return;
+  }
+
   try {
-    const res = await axios.post(
-      `${API}/api/events/${id}/register`,
-      form,
+    // Step 1: Ensure Razorpay script is loaded
+    const scriptLoaded = await loadRazorpayScript();
+    if (!scriptLoaded || !window.Razorpay) {
+      alert("Failed to load Razorpay payment system.\nPlease check your internet, disable adblocker, or try again.");
+      return;
+    }
+
+    console.log("Razorpay loaded successfully"); // debug
+
+    // Step 2: Create order
+    const orderResponse = await axios.post(
+      `${API}/api/events/${eventId}/create-payment-order`,
+      { amount: fee },
       { headers: { Authorization: `Bearer ${token}` } }
     );
 
-    const w_width = 450;
-    const w_height = 650;
-    const left = (window.screen.width / 2) - (w_width / 2);
-    const top = (window.screen.height / 2) - (w_height / 2);
-    const w = window.open("", "_blank", `width=${w_width},height=${w_height},left=${left},top=${top}`);
+    const { orderId, amount, currency } = orderResponse.data;
 
-    w.document.write(`
-      <html>
-        <body style="background:#030712;color:white;text-align:center;font-family:sans-serif;padding:20px;display:flex;align-items:center;justify-content:center;height:90vh;">
-          <div style="border:1px solid rgba(255,255,255,0.1);padding:30px;border-radius:24px;background:rgba(17, 24, 39, 0.8);backdrop-filter:blur(10px);box-shadow:0 20px 50px rgba(0,0,0,0.5);width:100%;">
-            <h2 style="letter-spacing:2px;font-weight:800;margin-bottom:20px;">ENTRY PASS</h2>
-            <div style="background:white;padding:15px;display:inline-block;border-radius:12px;margin-bottom:20px;">
-              <img src="${res.data.qrDataUrl}" width="220" />
-            </div>
-            <p style="font-size:1.2rem;margin-bottom:25px;color:#9ca3af;">${form.studentName}</p>
-            <button onclick="window.print()" style="padding:12px 30px;background:#6366f1;color:white;border:none;border-radius:10px;font-weight:bold;cursor:pointer;width:100%;">Print Entry Pass</button>
-          </div>
-        </body>
-      </html>
-    `);
+    console.log("Order created:", { orderId, amount }); // debug
 
+    // Step 3: Open Razorpay checkout
+    const options = {
+      key: import.meta.env.VITE_RAZORPAY_KEY_ID || "rzp_test_your_test_key_here",
+      amount: amount,
+      currency: currency,
+      name: "EventSphere",
+      description: `Registration for ${selectedEvent.name}`,
+      order_id: orderId,
+      handler: async function (response) {
+        console.log("Payment success response:", response); // debug
+
+        try {
+          const verifyRes = await axios.post(
+            `${API}/api/events/${eventId}/verify-payment-and-register`,
+            {
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_signature: response.razorpay_signature,
+              studentName: form.studentName,
+              registerNo: form.registerNo,
+              department: form.department,
+              amount: amount,
+            },
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+
+          // Show QR in popup
+          const w = window.open("", "_blank", "width=450,height=650");
+          if (w) {
+            w.document.write(`
+              <html>
+                <body style="background:#0f172a;color:white;text-align:center;font-family:sans-serif;padding:30px;">
+                  <h2 style="margin-bottom:20px;">ENTRY PASS</h2>
+                  <div style="background:white;padding:20px;border-radius:12px;display:inline-block;margin-bottom:25px;">
+                    <img src="${verifyRes.data.qrDataUrl}" width="240" />
+                  </div>
+                  <p style="font-size:1.3rem;color:#e2e8f0;margin-bottom:15px;">${form.studentName}</p>
+                  <p style="color:#34d399;font-weight:bold;">Payment Successful ✓</p>
+                  <button onclick="window.print()" style="padding:12px 40px;background:#6366f1;color:white;border:none;border-radius:10px;cursor:pointer;font-weight:bold;">
+                    Print Pass
+                  </button>
+                </body>
+              </html>
+            `);
+            w.document.close();
+          } else {
+            alert("Popup blocked! Please allow popups for this site.");
+          }
+        } catch (err) {
+          console.error("Verification failed:", err);
+          alert(err.response?.data?.message || "Registration failed after payment");
+        }
+      },
+      prefill: {
+        name: form.studentName,
+      },
+      theme: {
+        color: "#6366f1",
+      },
+      modal: {
+        ondismiss: function () {
+          console.log("Checkout closed by user");
+        }
+      }
+    };
+
+    const rzp = new window.Razorpay(options);
+    rzp.open();
   } catch (err) {
-    if (err.response) {
-      alert(err.response.data.message);
-    } else {
-      alert("Registration failed. Try again.");
-    }
+    console.error("Registration error:", err);
+    alert(err.response?.data?.message || "Payment initiation failed. Check console for details.");
   }
 };
-
-
   return (
     <div className="dashboard-container">
       <div className="glass-card full-width-card">
@@ -394,7 +586,12 @@ function StudentDashboard({ token }) {
               <h4>{e.name}</h4>
               <p className="e-venue">📍 {e.venue}</p>
               <p className="e-desc">{e.description}</p>
-              <button className="primary-glow-btn full" onClick={() => register(e.id)}>Secure Entry Pass</button>
+              <p style={{fontSize: "0.9rem", margin: "8px 0", color: e.registration_fee > 0 ? "#fbbf24" : "#10b981"}}>
+                {e.registration_fee > 0 ? `₹${e.registration_fee}` : "Free"}
+              </p>
+              <button className="primary-glow-btn full" onClick={() => register(e.id)}>
+                {e.registration_fee > 0 ? "Pay & Register" : "Register"}
+              </button>
             </div>
           </div>
         ))}
@@ -406,7 +603,11 @@ function StudentDashboard({ token }) {
           registrations.map(r => (
              <div className="event-row-card" key={r.reg_code}>
                 <span>{r.event_name}</span>
-                {r.verified ? <a href={`${API}/api/certificate/${r.reg_code}`} className="status-pill verified">Download Certificate</a> : <span className="status-pill pending">Attendance Pending</span>}
+                {r.verified ? (
+                  <a href={`${API}/api/certificate/${r.reg_code}`} className="status-pill verified">Download Certificate</a>
+                ) : (
+                  <span className="status-pill pending">Attendance Pending</span>
+                )}
              </div>
           ))
         )}
