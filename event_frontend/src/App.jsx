@@ -1,7 +1,8 @@
+import "./App.css";
+
 import { useState, useEffect } from "react";
 import axios from "axios";
 import { jwtDecode } from "jwt-decode";
-import "./App.css";
 
 const API = import.meta.env.VITE_API_URL;
 
@@ -33,9 +34,18 @@ function App() {
   const goToLanding = () => setView("landing");
 
   return (
+  <>
+    {/* 🟢 Background layer - now at root level 🟢 */}
+    <div className="background-animation">
+      <div className="bg-grid"></div>
+      <div className="bg-blob blob-1"></div>
+      <div className="bg-blob blob-2"></div>
+    </div>
+
+    {/* 🔴 Main app content 🔴 */}
     <div className="app-wrapper">
       <nav className="navbar fade-in">
-        <div className="logo">eventsphere_</div>
+        <div className="logo">EventOrizon</div>
         <div className="nav-links">
           <button className="text-link-nav" onClick={goToLanding}>Home</button>
           <button className="text-link-nav">Features</button>
@@ -66,7 +76,8 @@ function App() {
         )}
       </main>
     </div>
-  );
+  </>
+);
 }
 
 /* ── HELPERS ── */
@@ -81,8 +92,8 @@ function Landing({ goToLogin, goToRegister }) {
   return (
     <section className="hero slide-up">
       <div className="hero-content">
-        <h1 className="glitch-text">EventSphere</h1>
-        <p className="tagline">The Industrial Standard for Academic Event Lifecycle Management</p>
+        <h1 className="glitch-text">EventOrizon</h1>
+        <p className="tagline">Setting the benchmark for end-to-end academic event management</p>
         <div className="hero-cta">
           <button className="primary large" onClick={goToRegister}>Get Started Free</button>
           <button className="secondary large" onClick={goToLogin}>Operator Login</button>
@@ -431,9 +442,12 @@ function OrganizerDashboard({ token }) {
 
 /* ── STUDENT DASHBOARD ── */
 function StudentDashboard({ token }) {
+  const [processingEvent, setProcessingEvent] = useState(null);
+
   const [events, setEvents] = useState([]);
   const [registrations, setRegistrations] = useState([]);
   const [form, setForm] = useState({ studentName: "", registerNo: "", department: "" });
+
 
   useEffect(() => {
     axios.get(`${API}/api/events`).then(res => {
@@ -461,113 +475,189 @@ function StudentDashboard({ token }) {
     });
   };
 
-  const register = async (eventId) => {
-    if (!form.studentName || !form.registerNo || !form.department) {
-      alert("Please fill your name, register number and department first");
+const register = async (eventId) => {
+
+  // ✅ ADD (prevents double click)
+  if (processingEvent === eventId) return;
+  setProcessingEvent(eventId);
+
+  if (!form.studentName || !form.registerNo || !form.department) {
+    alert("Please fill your name, register number and department first");
+
+    // ✅ ADD (reset on early exit)
+    setProcessingEvent(null);
+    return;
+  }
+
+  const selectedEvent = events.find(e => e.id === eventId);
+  if (!selectedEvent) {
+
+    // ✅ ADD (reset on early exit)
+    setProcessingEvent(null);
+    return;
+  }
+
+  // ⛔ BLOCK duplicate registration BEFORE payment popup
+const alreadyRegistered = registrations.some(
+  r => r.event_name === selectedEvent.name
+);
+
+if (alreadyRegistered) {
+  alert("You are already registered for this event");
+  setProcessingEvent(null);
+  return;
+}
+
+
+  const fee = Number(selectedEvent.registration_fee) || 0;
+
+if (fee <= 0) {
+  try {
+    const regCode = Math.random().toString(36).substring(2, 15);
+
+    const verifyRes = await axios.post(
+      `${API}/api/events/${eventId}/verify-payment-and-register`,
+      {
+        razorpay_payment_id: "FREE_EVENT_" + regCode,
+        razorpay_order_id: "FREE_ORDER_" + regCode,
+        razorpay_signature: "FREE",
+        studentName: form.studentName,
+        registerNo: form.registerNo,
+        department: form.department,
+        amount: 0
+      },
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+
+    // 🔹 Show QR exactly like paid event
+    const wWidth = 450;
+    const wHeight = 650;
+    const xPos = (window.screen.width / 2) - (wWidth / 2);
+    const yPos = (window.screen.height / 2) - (wHeight / 2);
+    const w = window.open(
+      "",
+      "_blank",
+      `width=${wWidth},height=${wHeight},left=${xPos},top=${yPos}`
+    );
+
+    w.document.write(`
+      <html>
+        <body style="background:#0f172a;color:white;text-align:center;font-family:sans-serif;padding:30px;">
+          <h2 style="margin-bottom:20px;">ENTRY PASS - ${selectedEvent.name}</h2>
+          <div style="background:white;padding:20px;border-radius:12px;display:inline-block;margin-bottom:25px;">
+            <img src="${verifyRes.data.qrDataUrl}" width="240" />
+          </div>
+          <p style="font-size:1.3rem;color:#e2e8f0;margin-bottom:15px;">${form.studentName}</p>
+          <p style="color:#34d399;font-weight:bold;">Registered ✓ (Free Event)</p>
+          <button onclick="window.print()" style="padding:12px 40px;background:#6366f1;color:white;border:none;border-radius:10px;cursor:pointer;font-weight:bold;">
+            Print Pass
+          </button>
+        </body>
+      </html>
+    `);
+    w.document.close();
+
+  } catch (err) {
+    alert(err.response?.data?.message || "Registration failed");
+  } finally {
+    setProcessingEvent(null);
+  }
+  return;
+}
+
+
+  try {
+    const scriptLoaded = await loadRazorpayScript();
+    if (!scriptLoaded || !window.Razorpay) {
+      alert("Failed to load payment gateway.");
+
+      // ✅ ADD
+      setProcessingEvent(null);
       return;
     }
 
-    const selectedEvent = events.find(e => e.id === eventId);
-    if (!selectedEvent) return;
+    const orderResponse = await axios.post(
+      `${API}/api/events/${eventId}/create-payment-order`,
+      { amount: fee },
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
 
-    const fee = Number(selectedEvent.registration_fee) || 0;
+    const { orderId, amount, currency } = orderResponse.data;
 
-    if (fee <= 0) {
-      if (window.confirm("This is a free event. Would you like to register now?")) {
+    const options = {
+      key: import.meta.env.VITE_RAZORPAY_KEY_ID,
+      amount,
+      currency,
+      name: "EventOrizon",
+      description: `Registration for ${selectedEvent.name}`,
+      order_id: orderId,
+      handler: async function (response) {
         try {
-          const regCode = Math.random().toString(36).substring(2, 15);
-          await axios.post(`${API}/api/events/${eventId}/verify-payment-and-register`, {
-            razorpay_payment_id: "FREE_EVENT_" + regCode,
-            razorpay_order_id: "FREE_ORDER_" + regCode,
-            razorpay_signature: "FREE",
-            studentName: form.studentName,
-            registerNo: form.registerNo,
-            department: form.department,
-            amount: 0
-          }, { headers: { Authorization: `Bearer ${token}` } });
-          
-          alert("Registration Successful for Free Event!");
-          window.location.reload();
+          const verifyRes = await axios.post(
+            `${API}/api/events/${eventId}/verify-payment-and-register`,
+            {
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_signature: response.razorpay_signature,
+              studentName: form.studentName,
+              registerNo: form.registerNo,
+              department: form.department,
+              amount,
+            },
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+
+          const wWidth = 450;
+          const wHeight = 650;
+          const xPos = (window.screen.width / 2) - (wWidth / 2);
+          const yPos = (window.screen.height / 2) - (wHeight / 2);
+          const w = window.open("", "_blank", `width=${wWidth},height=${wHeight},left=${xPos},top=${yPos}`);
+
+          w.document.write(`
+            <html>
+              <body style="background:#0f172a;color:white;text-align:center;font-family:sans-serif;padding:30px;">
+                <h2 style="margin-bottom:20px;">ENTRY PASS - ${selectedEvent.name}</h2>
+                <div style="background:white;padding:20px;border-radius:12px;display:inline-block;margin-bottom:25px;">
+                  <img src="${verifyRes.data.qrDataUrl}" width="240" />
+                </div>
+                <p style="font-size:1.3rem;color:#e2e8f0;margin-bottom:15px;">${form.studentName}</p>
+                <p style="color:#34d399;font-weight:bold;">Payment Successful ✓</p>
+                <button onclick="window.print()" style="padding:12px 40px;background:#6366f1;color:white;border:none;border-radius:10px;cursor:pointer;font-weight:bold;">Print Pass</button>
+              </body>
+            </html>
+          `);
+          w.document.close();
+          alert("Registration successful!");
         } catch (err) {
-          alert("Registration failed. Please try again.");
+          alert("Verification failed.");
+        } finally {
+
+          // ✅ ADD (reset after payment flow)
+          setProcessingEvent(null);
         }
-      }
-      return;
+      },
+      modal: {
+    ondismiss: function () {
+      setProcessingEvent(null);
     }
+  },
+      prefill: { name: form.studentName },
+      theme: { color: "#6366f1" },
+    };
 
-    try {
-      const scriptLoaded = await loadRazorpayScript();
-      if (!scriptLoaded || !window.Razorpay) {
-        alert("Failed to load payment gateway.");
-        return;
-      }
+    const rzp = new window.Razorpay(options);
+    rzp.open();
+  } catch (err) {
+  const msg =
+    err.response?.data?.message ||
+    "Payment initiation failed.";
 
-      const orderResponse = await axios.post(
-        `${API}/api/events/${eventId}/create-payment-order`,
-        { amount: fee },
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
+  alert(msg);
+  setProcessingEvent(null);
+}
 
-      const { orderId, amount, currency } = orderResponse.data;
+};
 
-      const options = {
-        key: import.meta.env.VITE_RAZORPAY_KEY_ID,
-        amount,
-        currency,
-        name: "EventSphere",
-        description: `Registration for ${selectedEvent.name}`,
-        order_id: orderId,
-        handler: async function (response) {
-          try {
-            const verifyRes = await axios.post(
-              `${API}/api/events/${eventId}/verify-payment-and-register`,
-              {
-                razorpay_payment_id: response.razorpay_payment_id,
-                razorpay_order_id: response.razorpay_order_id,
-                razorpay_signature: response.razorpay_signature,
-                studentName: form.studentName,
-                registerNo: form.registerNo,
-                department: form.department,
-                amount,
-              },
-              { headers: { Authorization: `Bearer ${token}` } }
-            );
-
-            const wWidth = 450;
-            const wHeight = 650;
-            const xPos = (window.screen.width / 2) - (wWidth / 2);
-            const yPos = (window.screen.height / 2) - (wHeight / 2);
-            const w = window.open("", "_blank", `width=${wWidth},height=${wHeight},left=${xPos},top=${yPos}`);
-
-            w.document.write(`
-              <html>
-                <body style="background:#0f172a;color:white;text-align:center;font-family:sans-serif;padding:30px;">
-                  <h2 style="margin-bottom:20px;">ENTRY PASS - ${selectedEvent.name}</h2>
-                  <div style="background:white;padding:20px;border-radius:12px;display:inline-block;margin-bottom:25px;">
-                    <img src="${verifyRes.data.qrDataUrl}" width="240" />
-                  </div>
-                  <p style="font-size:1.3rem;color:#e2e8f0;margin-bottom:15px;">${form.studentName}</p>
-                  <p style="color:#34d399;font-weight:bold;">Payment Successful ✓</p>
-                  <button onclick="window.print()" style="padding:12px 40px;background:#6366f1;color:white;border:none;border-radius:10px;cursor:pointer;font-weight:bold;">Print Pass</button>
-                </body>
-              </html>
-            `);
-            w.document.close();
-            alert("Registration successful!");
-          } catch (err) {
-            alert("Verification failed.");
-          }
-        },
-        prefill: { name: form.studentName },
-        theme: { color: "#6366f1" },
-      };
-
-      const rzp = new window.Razorpay(options);
-      rzp.open();
-    } catch (err) {
-      alert("Payment initiation failed.");
-    }
-  };
 
   return (
     <div className="dashboard-container">
@@ -637,7 +727,12 @@ function StudentDashboard({ token }) {
         {events.map(e => (
           <div className="event-card" key={e.id}>
             <div className="event-thumb">
-              {e.thumbnail ? <img src={`${API}${e.thumbnail}`} alt="Thumbnail" /> : <div className="no-thumb">No Image Available</div>}
+{e.thumbnail && (
+  <img
+    src={`${API}${e.thumbnail}`}
+    onError={(e) => (e.target.style.display = "none")}
+  />
+)}
             </div>
             <div className="event-details">
               <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '10px'}}>
@@ -652,37 +747,78 @@ function StudentDashboard({ token }) {
                 {e.name}
               </h4>
               <p className="e-venue" style={{fontSize: '0.8rem', opacity: '0.8'}}>📍 {e.venue}</p>
-              <button className="primary-glow-btn full" style={{marginTop: '15px', padding: '0.8rem', fontSize: '0.85rem'}} onClick={() => register(e.id)}>
-                {e.registration_fee > 0 ? "PAY & REGISTER" : "REGISTER NOW"}
-              </button>
+             <button
+  className="primary-glow-btn full"
+  disabled={processingEvent === e.id}
+  onClick={() => register(e.id)}
+>
+  {processingEvent === e.id
+    ? "PROCESSING..."
+    : e.registration_fee > 0
+      ? "PAY & REGISTER"
+      : "REGISTER NOW"}
+</button>
+
+
             </div>
           </div>
         ))}
       </div>
 
       {/* PIC 3 FIX: INDUSTRIAL MY CREDENTIALS */}
-      <div className="glass-card full-width-card" style={{marginTop: "40px"}}>
-        <h3 style={{fontWeight: '800', marginBottom: '20px'}}>My Credentials</h3>
-        {registrations.length === 0 ? <p style={{color: 'var(--text-dim)'}}>No registrations found.</p> : (
-          registrations.map(r => (
-             <div className="event-row-card" key={r.reg_code} style={{padding: '1.5rem', background: 'rgba(255,255,255,0.02)'}}>
-                <span style={{textTransform: 'uppercase', fontWeight: '700', letterSpacing: '1px', fontSize: '0.95rem'}}>
-                  {r.event_name}
-                </span>
-                {r.verified ? (
-                  <a href={`${API}/api/certificate/${r.reg_code}`} className="status-pill verified" style={{padding: '8px 16px', borderRadius: '8px', fontWeight: '700'}}>DOWNLOAD CERTIFICATE</a>
-                ) : (
-                  <span className="status-pill pending" style={{padding: '8px 16px', borderRadius: '8px', textTransform: 'uppercase', fontSize: '0.7rem', letterSpacing: '1px', fontWeight: '700'}}>
-                    Attendance Pending
-                  </span>
-                )}
-             </div>
-          ))
-        )}
+   <div className="glass-card full-width-card" style={{ marginTop: "40px" }}>
+  <h3 style={{ fontWeight: '800', marginBottom: '20px' }}>
+    My Credentials
+  </h3>
+
+  {registrations.filter(r => r.verified === 1).length === 0 ? (
+    <p style={{ color: 'var(--text-dim)' }}>
+      No verified credentials yet.
+    </p>
+  ) : (
+    registrations
+      .filter(r => r.verified === 1)
+      .map(r => (
+        <div
+          className="event-row-card"
+          key={r.reg_code}
+          style={{
+            padding: '1.5rem',
+            background: 'rgba(255,255,255,0.02)'
+          }}
+        >
+          <span
+            style={{
+              textTransform: 'uppercase',
+              fontWeight: '700',
+              letterSpacing: '1px',
+              fontSize: '0.95rem'
+            }}
+          >
+            {r.event_name}
+          </span>
+
+          <button
+            className="btn-mini-sec"
+            onClick={() =>
+              window.open(
+                `${API}/api/certificate/${r.reg_code}`,
+                "_blank"
+              )
+            }
+          >
+            Download Certificate
+          </button>
+        </div>
+      ))
+  )}
+</div>
+
       </div>
-    </div>
   );
-}/* ── ADMIN DASHBOARD ── */
+}
+
+/* ── ADMIN DASHBOARD ── */
 function AdminDashboard({ token }) {
   const [events, setEvents] = useState([]);
   useEffect(() => {
