@@ -333,6 +333,6 @@ app.get("/api/verify/:code", (req, res) => {
 app.get("/api/admin/events", auth, (_, res) => res.json([]));
 
 /* ================= SERVER ================= */
-app.listen(5001, () => {
+app.listen(5001, "0.0.0.0", () => {
   console.log("✅ Backend running on port 5001");
 });
